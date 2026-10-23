@@ -1,0 +1,152 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// This security rules file assumes the following data structures:
+//
+// Collection: contact_messages
+// Document ID: auto-generated
+// Fields:
+//   - senderName: string (required, 2..100 chars) - Full name of the sender
+//   - senderEmail: string (required, valid email format, <= 254 chars) - Contact email address
+//   - senderRole: string (required, enum: 'niño' | 'maestro' | 'familia') - Role of the sender
+//   - subject: string (required, 4..120 chars) - Message subject line
+//   - message: string (required, 10..1000 chars) - Contact message body
+//   - createdAt: string (required, ISO 8601 date string, <= 40 chars, immutable) - Submission timestamp
+//
+// Collection: quiz_results
+// Document ID: auto-generated
+// Fields:
+//   - playerName: string (required, 1..100 chars) - Display name of the quiz player
+//   - gameType: string (required, enum: 'cuestionario' | 'biomas' | 'sopa_letras') - Identifier of the completed game
+//   - score: number (required, 0..totalQuestions) - Achieved score
+//   - totalQuestions: number (required, 1..100) - Total questions/targets in the game
+//   - durationSeconds: number (required, 0..86400) - Elapsed time in seconds
+//   - completedAt: string (required, ISO 8601 date string, <= 40 chars, immutable) - Completion timestamp
+//
+// Collection: registered_users
+// Document ID: auto-generated
+// Fields:
+//   - email: string (required, valid email format, <= 254 chars) - Registered user email
+//   - createdAt: string (required, ISO 8601 date string, <= 40 chars, immutable) - Registration timestamp
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.size() >= 5 &&
+        email.size() <= 254 &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.size() >= 20 &&
+        dateStr.size() <= 40 &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidContactMessage(data) {
+      let allowedFields = ['senderName', 'senderEmail', 'senderRole', 'subject', 'message', 'createdAt'];
+      return hasRequiredFields(allowedFields) &&
+        hasOnlyAllowedFields(allowedFields) &&
+        validStringLength('senderName', 2, 100) &&
+        isValidEmail(data.senderEmail) &&
+        data.senderRole is string &&
+        data.senderRole in ['niño', 'maestro', 'familia'] &&
+        validStringLength('subject', 4, 120) &&
+        validStringLength('message', 10, 1000) &&
+        isValidDateString(data.createdAt);
+    }
+
+    function isValidQuizAttempt(data) {
+      let allowedFields = ['playerName', 'gameType', 'score', 'totalQuestions', 'durationSeconds', 'completedAt'];
+      return hasRequiredFields(allowedFields) &&
+        hasOnlyAllowedFields(allowedFields) &&
+        validStringLength('playerName', 1, 100) &&
+        data.gameType is string &&
+        data.gameType in ['cuestionario', 'biomas', 'sopa_letras'] &&
+        data.score is number &&
+        data.score >= 0 &&
+        data.totalQuestions is number &&
+        data.totalQuestions >= 1 &&
+        data.totalQuestions <= 100 &&
+        data.score <= data.totalQuestions &&
+        data.durationSeconds is number &&
+        data.durationSeconds >= 0 &&
+        data.durationSeconds <= 86400 &&
+        isValidDateString(data.completedAt);
+    }
+
+    function isValidRegisteredUser(data) {
+      let allowedFields = ['email', 'createdAt'];
+      return hasRequiredFields(allowedFields) &&
+        hasOnlyAllowedFields(allowedFields) &&
+        isValidEmail(data.email) &&
+        isValidDateString(data.createdAt);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Contact form submissions: controlled public creation, no client read/update/delete (protects PII)
+    match /contact_messages/{messageId} {
+      allow create: if isValidContactMessage(request.resource.data);
+      allow read, update, delete: if false;
+    }
+
+    // Quiz attempts leaderboard: public read and validated score creation, no updates or deletes
+    match /quiz_results/{attemptId} {
+      allow read: if true;
+      allow create: if isValidQuizAttempt(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // User registrations: controlled creation only, no client read/update/delete (protects email PII)
+    match /registered_users/{userId} {
+      allow create: if isValidRegisteredUser(request.resource.data);
+      allow read, update, delete: if false;
+    }
+
+    // Default deny for all other collections and documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
