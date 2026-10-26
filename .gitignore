@@ -1,5 +1,8 @@
 node_modules/
+venv/
 dist/
+build/
+.dart_tool/
 *.env
 *.env.local
 .env.*
